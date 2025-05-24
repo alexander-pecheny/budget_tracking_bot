@@ -1,0 +1,39 @@
+bot_token: "YOUR_BOT_TOKEN_HERE"
+
+authorized_users:
+  - 12345
+  - 67890
+
+database_path: "budget.db"
+
+currencies:
+  - "RSD"
+  - "AMD"
+  - "USD"
+  - "EUR"
+  - "RUB"
+
+categories:
+  - "Базовая еда"
+  - "Бары/рестораны"
+  - "Такси"
+  - "Спорт"
+  - "Медицина"
+  - "Путешествия"
+  - "Квартплата"
+  - "Машина"
+  - "Порадовать себя"
+  - "Одежда"
+  - "Парикмахерская"
+  - "Товары для дома"
+  - "Подарки"
+  - "Другое"
+
+timeout_seconds: 300
+
+exchange_rates:
+  AMD: 0.25
+  EUR: 117
+  USD: 110
+  RUB: 1.3
+  RSD: 1.0 
