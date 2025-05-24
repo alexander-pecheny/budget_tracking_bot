@@ -1,9 +1,10 @@
 import logging
 import re
 import sqlite3
-import yaml
 from datetime import datetime, timedelta
+from typing import Optional
 
+import yaml
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
 from telegram.ext import (
     Application,
@@ -15,31 +16,35 @@ from telegram.ext import (
 )
 
 with open("config.yaml", "r", encoding="utf-8") as f:
-    config = yaml.safe_load(f)
+    config: dict = yaml.safe_load(f)
 
-BOT_TOKEN = config["bot_token"]
-AUTHORIZED_USERS = config["authorized_users"]
-DATABASE_PATH = config["database_path"]
-CURRENCIES = config["currencies"]
-CATEGORIES = config["categories"]
-TIMEOUT_SECONDS = config["timeout_seconds"]
-EXCHANGE_RATES = config["exchange_rates"]
+BOT_TOKEN: str = config["bot_token"]
+AUTHORIZED_USERS: list[int] = config["authorized_users"]
+DATABASE_PATH: str = config["database_path"]
+CURRENCIES: list[str] = config["currencies"]
+CATEGORIES: list[str] = config["categories"]
+TIMEOUT_SECONDS: int = config["timeout_seconds"]
+EXCHANGE_RATES: dict[str, float] = config["exchange_rates"]
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
+ASKING_CURRENCY: int
+ASKING_CATEGORY: int
+ASKING_COMMENT_CHOICE: int
+ASKING_COMMENT: int
 ASKING_CURRENCY, ASKING_CATEGORY, ASKING_COMMENT_CHOICE, ASKING_COMMENT = range(4)
 
 
 class BudgetDatabase:
-    def __init__(self, db_path: str = DATABASE_PATH):
-        self.db_path = db_path
+    def __init__(self, db_path: str = DATABASE_PATH) -> None:
+        self.db_path: str = db_path
         self.init_database()
 
-    def init_database(self):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+    def init_database(self) -> None:
+        conn: sqlite3.Connection = sqlite3.connect(self.db_path)
+        cursor: sqlite3.Cursor = conn.cursor()
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS transactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,10 +65,10 @@ class BudgetDatabase:
         amount: float,
         currency: str,
         category: str,
-        comment: str = None,
-    ):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+        comment: Optional[str] = None,
+    ) -> None:
+        conn: sqlite3.Connection = sqlite3.connect(self.db_path)
+        cursor: sqlite3.Cursor = conn.cursor()
         cursor.execute(
             """
             INSERT INTO transactions (user_id, amount, currency, category, comment)
@@ -76,24 +81,11 @@ class BudgetDatabase:
 
     def get_stats(
         self,
-        start_date: datetime = None,
-        end_date: datetime = None,
-        days: int = None,
-    ):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-
-        if days and not start_date:
-            start_date = datetime.now() - timedelta(days=days)
-        elif not start_date:
-            start_date = datetime.now() - timedelta(days=30)
-        assert start_date
-
-        if days and start_date and not end_date:
-            end_date = start_date + timedelta(days=days)
-        elif not end_date:
-            end_date = datetime.now()
-        assert end_date
+        start_date: datetime,
+        end_date: datetime,
+    ) -> list[tuple[str, str, float]]:
+        conn: sqlite3.Connection = sqlite3.connect(self.db_path)
+        cursor: sqlite3.Cursor = conn.cursor()
 
         cursor.execute(
             """
@@ -106,16 +98,16 @@ class BudgetDatabase:
             (start_date.isoformat(), end_date.isoformat()),
         )
 
-        results = cursor.fetchall()
+        results: list[tuple[str, str, float]] = cursor.fetchall()
         conn.close()
         return results
 
 
-db = BudgetDatabase()
+db: BudgetDatabase = BudgetDatabase()
 
 
 def convert_to_rsd(amount: float, currency: str) -> float:
-    rate = EXCHANGE_RATES.get(currency, 1.0)
+    rate: float = EXCHANGE_RATES.get(currency, 1.0)
     return round(amount * rate, 1)
 
 
@@ -123,7 +115,7 @@ def is_authorized(user_id: int) -> bool:
     return user_id in AUTHORIZED_USERS
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_authorized(update.effective_user.id):
         return
 
@@ -132,7 +124,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-def try_float(text: str) -> float:
+def try_float(text: str) -> Optional[float]:
     text = text.replace(",", ".")
     try:
         return float(text.strip())
@@ -140,18 +132,20 @@ def try_float(text: str) -> float:
         return None
 
 
-async def handle_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not is_authorized(update.effective_user.id):
         return ConversationHandler.END
 
-    text = update.message.text.strip()
+    text: str = update.message.text.strip()
 
-    amount = try_float(text)
+    amount: Optional[float] = try_float(text)
     if amount:
         context.user_data["amount"] = amount
 
-        keyboard = [[currency] for currency in CURRENCIES]
-        reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+        keyboard: list[list[str]] = [[currency] for currency in CURRENCIES]
+        reply_markup: ReplyKeyboardMarkup = ReplyKeyboardMarkup(
+            keyboard, one_time_keyboard=True
+        )
 
         await update.message.reply_text(
             f"Сумма: {amount}\nВыберите валюту:", reply_markup=reply_markup
@@ -161,11 +155,11 @@ async def handle_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-async def handle_currency(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not is_authorized(update.effective_user.id):
         return ConversationHandler.END
 
-    currency = update.message.text
+    currency: str = update.message.text
     if currency not in CURRENCIES:
         await update.message.reply_text(
             "Пожалуйста, выберите валюту из предложенных вариантов."
@@ -174,14 +168,16 @@ async def handle_currency(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["currency"] = currency
 
-    keyboard = []
+    keyboard: list[list[str]] = []
     for i in range(0, len(CATEGORIES), 2):
-        row = [CATEGORIES[i]]
+        row: list[str] = [CATEGORIES[i]]
         if i + 1 < len(CATEGORIES):
             row.append(CATEGORIES[i + 1])
         keyboard.append(row)
 
-    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+    reply_markup: ReplyKeyboardMarkup = ReplyKeyboardMarkup(
+        keyboard, one_time_keyboard=True
+    )
 
     await update.message.reply_text(
         f"Сумма: {context.user_data['amount']} {currency}\nВыберите категорию:",
@@ -190,11 +186,11 @@ async def handle_currency(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ASKING_CATEGORY
 
 
-async def handle_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not is_authorized(update.effective_user.id):
         return ConversationHandler.END
 
-    category = update.message.text
+    category: str = update.message.text
     if category not in CATEGORIES:
         await update.message.reply_text(
             "Пожалуйста, выберите категорию из предложенных вариантов."
@@ -203,8 +199,10 @@ async def handle_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["category"] = category
 
-    keyboard = [["Да", "Нет"]]
-    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+    keyboard: list[list[str]] = [["Да", "Нет"]]
+    reply_markup: ReplyKeyboardMarkup = ReplyKeyboardMarkup(
+        keyboard, one_time_keyboard=True
+    )
 
     await update.message.reply_text(
         f"Сумма: {context.user_data['amount']} {context.user_data['currency']}\n"
@@ -215,11 +213,13 @@ async def handle_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ASKING_COMMENT_CHOICE
 
 
-async def handle_comment_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_comment_choice(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
     if not is_authorized(update.effective_user.id):
         return ConversationHandler.END
 
-    choice = update.message.text
+    choice: str = update.message.text
     if choice == "Нет":
         await save_transaction(update, context, None)
         return ConversationHandler.END
@@ -233,26 +233,26 @@ async def handle_comment_choice(update: Update, context: ContextTypes.DEFAULT_TY
         return ASKING_COMMENT_CHOICE
 
 
-async def handle_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not is_authorized(update.effective_user.id):
         return ConversationHandler.END
 
-    comment = update.message.text
+    comment: str = update.message.text
     await save_transaction(update, context, comment)
     return ConversationHandler.END
 
 
 async def save_transaction(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, comment: str
-):
-    user_id = update.effective_user.id
-    amount = context.user_data["amount"]
-    currency = context.user_data["currency"]
-    category = context.user_data["category"]
+    update: Update, context: ContextTypes.DEFAULT_TYPE, comment: Optional[str]
+) -> None:
+    user_id: int = update.effective_user.id
+    amount: float = context.user_data["amount"]
+    currency: str = context.user_data["currency"]
+    category: str = context.user_data["category"]
 
     db.add_transaction(user_id, amount, currency, category, comment)
 
-    message = (
+    message: str = (
         f"✅ Транзакция добавлена!\nСумма: {amount} {currency}\nКатегория: {category}"
     )
     if comment:
@@ -263,7 +263,7 @@ async def save_transaction(
     context.user_data.clear()
 
 
-async def timeout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def timeout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
         "Транзакция не была добавлена так как вы не ответили в течение 5 минут.",
         reply_markup=ReplyKeyboardRemove(),
@@ -272,71 +272,100 @@ async def timeout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_authorized(update.effective_user.id):
         return
 
-    user_id = update.effective_user.id
-    args = context.args
+    args: list[str] = context.args
 
-    start_date = None
-    end_date = None
-    days = None
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
 
     if not args:
-        days = 30
+        start_date = (datetime.now() - timedelta(days=30)).replace(
+            hour=0, minute=0, second=0
+        )
+        end_date = datetime.now().replace(hour=23, minute=59, second=59)
     elif len(args) == 1:
-        arg = args[0]
-        if re.match(r"^\d+$", arg):
-            days = int(arg)
+        arg: str = args[0]
+        if try_float(arg):
+            start_date = (datetime.now() - timedelta(days=int(arg))).replace(
+                hour=0, minute=0, second=0
+            )
+            end_date = datetime.now().replace(hour=23, minute=59, second=59)
         elif re.match(r"^\d{4}-\d{2}-\d{2}$", arg):
             start_date = datetime.strptime(arg, "%Y-%m-%d")
+            end_date = datetime.now().replace(hour=23, minute=59, second=59)
+        else:
+            await update.message.reply_text("Не тот формат.")
+            return
     elif len(args) == 2:
+        arg1: str
+        arg2: str
         arg1, arg2 = args
         if re.match(r"^\d{4}-\d{2}-\d{2}$", arg1):
             start_date = datetime.strptime(arg1, "%Y-%m-%d")
             if re.match(r"^\d+$", arg2):
-                days = int(arg2)
+                end_date = (start_date + timedelta(days=int(arg2))).replace(
+                    hour=23, minute=59, second=59
+                )
             elif re.match(r"^\d{4}-\d{2}-\d{2}$", arg2):
-                end_date = datetime.strptime(arg2, "%Y-%m-%d")
+                end_date = datetime.strptime(arg2, "%Y-%m-%d").replace(
+                    hour=23, minute=59, second=59
+                )
+        else:
+            await update.message.reply_text("Не тот формат.")
+            return
+    else:
+        await update.message.reply_text("Не тот формат.")
+        return
+
+    assert start_date
+    assert end_date
 
     try:
-        results = db.get_stats(start_date, end_date, days)
-
-        if not results:
-            await update.message.reply_text("Нет транзакций за указанный период.")
-            return
-
-        category_totals = {}
-        grand_total_rsd = 0
-
-        for category, currency, amount in results:
-            amount_rsd = convert_to_rsd(amount, currency)
-            if category not in category_totals:
-                category_totals[category] = 0
-            category_totals[category] += amount_rsd
-            grand_total_rsd += amount_rsd
-
-        message = f"📊 Статистика расходов с {start_date} по {end_date}:\n\n"
-
-        for category, total_rsd in sorted(category_totals.items(), key=lambda x: x[1], reverse=True):
-            percentage = (total_rsd / grand_total_rsd) * 100 if grand_total_rsd > 0 else 0
-            message += f"{category}: {total_rsd:.1f} RSD ({percentage:.1f}%)\n"
-
-        message += f"\n💰 Общий расход: {grand_total_rsd:.1f} RSD"
-
-        await update.message.reply_text(message)
+        results: list[tuple[str, str, float]] = db.get_stats(start_date, end_date)
 
     except Exception as e:
         await update.message.reply_text(
             f"Ошибка при получении статистики {type(e)} {e}. Проверьте формат команды."
         )
 
+    if not results:
+        await update.message.reply_text("Нет транзакций за указанный период.")
+        return
 
-def main():
-    application = Application.builder().token(BOT_TOKEN).build()
+    category_totals: dict[str, float] = {}
+    grand_total_rsd: float = 0
 
-    conv_handler = ConversationHandler(
+    for category, currency, amount in results:
+        amount_rsd: float = convert_to_rsd(amount, currency)
+        if category not in category_totals:
+            category_totals[category] = 0
+        category_totals[category] += amount_rsd
+        grand_total_rsd += amount_rsd
+
+    message: str = (
+        f"📊 Статистика расходов с {start_date.date()} по {end_date.date()}:\n\n"
+    )
+
+    for category, total_rsd in sorted(
+        category_totals.items(), key=lambda x: x[1], reverse=True
+    ):
+        percentage: float = (
+            (total_rsd / grand_total_rsd) * 100 if grand_total_rsd > 0 else 0
+        )
+        message += f"{category}: {total_rsd:.1f} RSD ({percentage:.1f}%)\n"
+
+    message += f"\n💰 Общий расход: {grand_total_rsd:.1f} RSD"
+
+    await update.message.reply_text(message)
+
+
+def main() -> None:
+    application: Application = Application.builder().token(BOT_TOKEN).build()
+
+    conv_handler: ConversationHandler = ConversationHandler(
         entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, handle_amount)],
         states={
             ASKING_CURRENCY: [MessageHandler(filters.TEXT, handle_currency)],

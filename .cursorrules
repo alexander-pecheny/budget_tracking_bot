@@ -1,1 +1,5 @@
 Do NOT add comments unless the code is VERY complex or non-trivial. In these cases consider instead to rewrite code to be simpler.
+
+Always annotate types.
+
+Do NOT use very big try/except blocks, that's an anti-pattern. Use them sparingly and only around single functions or two/three line blocks. When handling exception always print stack traces in form of something like f"Error happened: {type(e)} {e}".
