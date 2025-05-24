@@ -332,7 +332,9 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
 
     if not results:
-        await update.message.reply_text("Нет транзакций за указанный период.")
+        await update.message.reply_text(
+            f"Нет транзакций за указанный период {start_date.date()} — {end_date.date()}."
+        )
         return
 
     category_totals: dict[str, float] = {}
