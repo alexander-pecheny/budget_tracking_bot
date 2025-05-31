@@ -23,6 +23,7 @@ AUTHORIZED_USERS: list[int] = config["authorized_users"]
 DATABASE_PATH: str = config["database_path"]
 CURRENCIES: list[str] = config["currencies"]
 CATEGORIES: list[str] = config["categories"]
+CATEGORIES_NO_COMMENT: list[str] = config["categories_no_comment"]
 TIMEOUT_SECONDS: int = config["timeout_seconds"]
 EXCHANGE_RATES: dict[str, float] = config["exchange_rates"]
 
@@ -32,9 +33,8 @@ logging.basicConfig(
 
 ASKING_CURRENCY: int
 ASKING_CATEGORY: int
-ASKING_COMMENT_CHOICE: int
 ASKING_COMMENT: int
-ASKING_CURRENCY, ASKING_CATEGORY, ASKING_COMMENT_CHOICE, ASKING_COMMENT = range(4)
+ASKING_CURRENCY, ASKING_CATEGORY, ASKING_COMMENT = range(3)
 
 
 class BudgetDatabase:
@@ -199,38 +199,21 @@ async def handle_category(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     context.user_data["category"] = category
 
-    keyboard: list[list[str]] = [["Да", "Нет"]]
-    reply_markup: ReplyKeyboardMarkup = ReplyKeyboardMarkup(
-        keyboard, one_time_keyboard=True
-    )
+    amount: float = context.user_data["amount"]
+    currency: str = context.user_data["currency"]
+    amount_rsd: float = convert_to_rsd(amount, currency)
+
+    if category in CATEGORIES_NO_COMMENT or amount_rsd < 1000:
+        await save_transaction(update, context, None)
+        return ConversationHandler.END
 
     await update.message.reply_text(
         f"Сумма: {context.user_data['amount']} {context.user_data['currency']}\n"
         f"Категория: {category}\n"
-        f"Хотите добавить комментарий?",
-        reply_markup=reply_markup,
+        f"Введите комментарий:",
+        reply_markup=ReplyKeyboardRemove(),
     )
-    return ASKING_COMMENT_CHOICE
-
-
-async def handle_comment_choice(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> int:
-    if not is_authorized(update.effective_user.id):
-        return ConversationHandler.END
-
-    choice: str = update.message.text
-    if choice == "Нет":
-        await save_transaction(update, context, None)
-        return ConversationHandler.END
-    elif choice == "Да":
-        await update.message.reply_text(
-            "Введите комментарий:", reply_markup=ReplyKeyboardRemove()
-        )
-        return ASKING_COMMENT
-    else:
-        await update.message.reply_text("Пожалуйста, выберите 'Да' или 'Нет'.")
-        return ASKING_COMMENT_CHOICE
+    return ASKING_COMMENT
 
 
 async def handle_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -372,9 +355,6 @@ def main() -> None:
         states={
             ASKING_CURRENCY: [MessageHandler(filters.TEXT, handle_currency)],
             ASKING_CATEGORY: [MessageHandler(filters.TEXT, handle_category)],
-            ASKING_COMMENT_CHOICE: [
-                MessageHandler(filters.TEXT, handle_comment_choice)
-            ],
             ASKING_COMMENT: [MessageHandler(filters.TEXT, handle_comment)],
         },
         fallbacks=[],
