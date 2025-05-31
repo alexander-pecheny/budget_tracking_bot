@@ -83,24 +83,62 @@ class BudgetDatabase:
         self,
         start_date: datetime,
         end_date: datetime,
+        user_id: Optional[int] = None,
     ) -> list[tuple[str, str, float]]:
+        conn: sqlite3.Connection = sqlite3.connect(self.db_path)
+        cursor: sqlite3.Cursor = conn.cursor()
+
+        if user_id is not None:
+            cursor.execute(
+                """
+                SELECT category, currency, SUM(amount) as total
+                FROM transactions 
+                WHERE user_id = ? AND timestamp BETWEEN ? AND ?
+                GROUP BY category, currency
+                ORDER BY total DESC
+            """,
+                (user_id, start_date.isoformat(), end_date.isoformat()),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT category, currency, SUM(amount) as total
+                FROM transactions 
+                WHERE timestamp BETWEEN ? AND ?
+                GROUP BY category, currency
+                ORDER BY total DESC
+            """,
+                (start_date.isoformat(), end_date.isoformat()),
+            )
+
+        results: list[tuple[str, str, float]] = cursor.fetchall()
+        conn.close()
+        return results
+
+    def delete_last_transaction(self, user_id: int) -> bool:
         conn: sqlite3.Connection = sqlite3.connect(self.db_path)
         cursor: sqlite3.Cursor = conn.cursor()
 
         cursor.execute(
             """
-            SELECT category, currency, SUM(amount) as total
-            FROM transactions 
-            WHERE timestamp BETWEEN ? AND ?
-            GROUP BY category, currency
-            ORDER BY total DESC
+            SELECT id FROM transactions 
+            WHERE user_id = ? 
+            ORDER BY timestamp DESC, id DESC 
+            LIMIT 1
         """,
-            (start_date.isoformat(), end_date.isoformat()),
+            (user_id,),
         )
 
-        results: list[tuple[str, str, float]] = cursor.fetchall()
+        result: Optional[tuple[int]] = cursor.fetchone()
+        if not result:
+            conn.close()
+            return False
+
+        transaction_id: int = result[0]
+        cursor.execute("DELETE FROM transactions WHERE id = ?", (transaction_id,))
+        conn.commit()
         conn.close()
-        return results
+        return True
 
 
 db: BudgetDatabase = BudgetDatabase()
@@ -347,6 +385,121 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text(message)
 
 
+async def delete_last_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    if not is_authorized(update.effective_user.id):
+        return
+
+    user_id: int = update.effective_user.id
+
+    try:
+        success: bool = db.delete_last_transaction(user_id)
+        if success:
+            await update.message.reply_text("✅ Последняя транзакция удалена.")
+        else:
+            await update.message.reply_text("❌ Нет транзакций для удаления.")
+    except Exception as e:
+        await update.message.reply_text(
+            f"Ошибка при удалении транзакции: {type(e)} {e}"
+        )
+
+
+async def stats_me_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(update.effective_user.id):
+        return
+
+    user_id: int = update.effective_user.id
+    args: list[str] = context.args
+
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+
+    if not args:
+        start_date = (datetime.now() - timedelta(days=30)).replace(
+            hour=0, minute=0, second=0
+        )
+        end_date = datetime.now().replace(hour=23, minute=59, second=59)
+    elif len(args) == 1:
+        arg: str = args[0]
+        if try_float(arg):
+            start_date = (datetime.now() - timedelta(days=int(arg))).replace(
+                hour=0, minute=0, second=0
+            )
+            end_date = datetime.now().replace(hour=23, minute=59, second=59)
+        elif re.match(r"^\d{4}-\d{2}-\d{2}$", arg):
+            start_date = datetime.strptime(arg, "%Y-%m-%d")
+            end_date = datetime.now().replace(hour=23, minute=59, second=59)
+        else:
+            await update.message.reply_text("Не тот формат.")
+            return
+    elif len(args) == 2:
+        arg1: str
+        arg2: str
+        arg1, arg2 = args
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", arg1):
+            start_date = datetime.strptime(arg1, "%Y-%m-%d")
+            if re.match(r"^\d+$", arg2):
+                end_date = (start_date + timedelta(days=int(arg2))).replace(
+                    hour=23, minute=59, second=59
+                )
+            elif re.match(r"^\d{4}-\d{2}-\d{2}$", arg2):
+                end_date = datetime.strptime(arg2, "%Y-%m-%d").replace(
+                    hour=23, minute=59, second=59
+                )
+        else:
+            await update.message.reply_text("Не тот формат.")
+            return
+    else:
+        await update.message.reply_text("Не тот формат.")
+        return
+
+    assert start_date
+    assert end_date
+
+    try:
+        results: list[tuple[str, str, float]] = db.get_stats(
+            start_date, end_date, user_id
+        )
+    except Exception as e:
+        await update.message.reply_text(
+            f"Ошибка при получении статистики {type(e)} {e}. Проверьте формат команды."
+        )
+        return
+
+    if not results:
+        await update.message.reply_text(
+            f"Нет ваших транзакций за указанный период {start_date.date()} — {end_date.date()}."
+        )
+        return
+
+    category_totals: dict[str, float] = {}
+    grand_total_rsd: float = 0
+
+    for category, currency, amount in results:
+        amount_rsd: float = convert_to_rsd(amount, currency)
+        if category not in category_totals:
+            category_totals[category] = 0
+        category_totals[category] += amount_rsd
+        grand_total_rsd += amount_rsd
+
+    message: str = (
+        f"📊 Ваша статистика расходов с {start_date.date()} по {end_date.date()}:\n\n"
+    )
+
+    for category, total_rsd in sorted(
+        category_totals.items(), key=lambda x: x[1], reverse=True
+    ):
+        percentage: float = (
+            (total_rsd / grand_total_rsd) * 100 if grand_total_rsd > 0 else 0
+        )
+        message += f"{category}: {total_rsd:.1f} RSD ({percentage:.1f}%)\n"
+
+    message += f"\n💰 Ваш общий расход: {grand_total_rsd:.1f} RSD"
+
+    await update.message.reply_text(message)
+
+
 def main() -> None:
     application: Application = Application.builder().token(BOT_TOKEN).build()
 
@@ -364,6 +517,8 @@ def main() -> None:
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("delete_last", delete_last_command))
+    application.add_handler(CommandHandler("stats_me", stats_me_command))
     application.add_handler(conv_handler)
 
     print("Bot starting...")
