@@ -36,6 +36,7 @@ TIMEOUT_SECONDS: int = config["timeout_seconds"]
 EXCHANGE_RATES: dict[str, float] = config["exchange_rates"]
 WEBAPP_API_URL: str = config.get("webapp_api_url", "")
 WEBAPP_API_PORT: int = config.get("webapp_api_port", 0)
+USER_NAMES: dict[int, str] = {int(k): v for k, v in config.get("user_names", {}).items()}
 
 def make_api_token(user_id: int) -> str:
     return hashlib.sha256(f"webapp-{BOT_TOKEN}-{user_id}".encode()).hexdigest()[:32]
@@ -166,6 +167,23 @@ class BudgetDatabase:
             LIMIT ?
         """,
             (user_id, limit),
+        )
+        results = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return results
+
+    def get_all_recent_transactions(self, limit: int = 50) -> list[dict]:
+        conn: sqlite3.Connection = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor: sqlite3.Cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, user_id, amount, currency, category, comment, timestamp
+            FROM transactions
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ?
+        """,
+            (limit,),
         )
         results = [dict(row) for row in cursor.fetchall()]
         conn.close()
@@ -679,7 +697,11 @@ async def api_get_transactions(request: web.Request) -> web.Response:
     user_id = validate_api_token(request)
     if user_id is None:
         return web.json_response({"error": "unauthorized"}, status=401)
-    transactions = db.get_recent_transactions(user_id)
+    transactions = db.get_all_recent_transactions()
+    for tx in transactions:
+        tx["user_name"] = USER_NAMES.get(tx["user_id"], str(tx["user_id"]))
+        tx["is_own"] = tx["user_id"] == user_id
+        del tx["user_id"]
     return web.json_response(transactions)
 
 

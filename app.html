@@ -68,6 +68,7 @@
         .tx-amount { font-weight: 700; font-size: 15px; white-space: nowrap; }
         .tx-bottom { display: flex; justify-content: space-between; margin-top: 4px; }
         .tx-comment { color: var(--text-muted); font-size: 13px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .tx-user { color: var(--text-muted); font-size: 12px; font-weight: 500; }
         .tx-date { color: var(--text-muted); font-size: 13px; margin-left: 12px; white-space: nowrap; }
         .delete-btn {
             width: 100%; padding: 12px; margin-top: 24px; border: none;
@@ -83,8 +84,6 @@
     <div id="app"></div>
     <script>
     (function() {
-        var dbg = document.getElementById('app');
-        try {
         var tg = window.Telegram && window.Telegram.WebApp;
         var pathParts = window.location.pathname.split('/');
         // URL: /app/{token}/{uid}
@@ -94,15 +93,8 @@
             ? tg.initDataUnsafe.user.id
             : parseInt(pathParts[3] || '0');
 
-        dbg.innerHTML = '<pre style="color:red;font-size:12px;">'
-            + 'tg: ' + !!tg
-            + '\napiToken: ' + (apiToken ? apiToken.substring(0,8) + '...' : 'EMPTY')
-            + '\nuserId: ' + userId
-            + '\npathname: ' + window.location.pathname
-            + '</pre>';
-
         if (!apiToken || !userId) {
-            dbg.innerHTML += '<pre style="color:red;">GUARD FIRED: apiToken=' + !!apiToken + ' userId=' + !!userId + '</pre>';
+            document.body.style.display = 'none';
             return;
         }
 
@@ -271,9 +263,9 @@
             for (var i = 0; i < transactions.length; i++) {
                 var tx = transactions[i];
                 var date = tx.timestamp ? tx.timestamp.substring(5, 16).replace('T', ' ') : '';
-                html += '<div class="tx-item" data-idx="' + i + '">';
+                html += '<div class="tx-item' + (tx.is_own ? '' : ' tx-readonly') + '" data-idx="' + i + '">';
                 html += '<div class="tx-top">';
-                html += '<span class="tx-category">' + esc(tx.category) + '</span>';
+                html += '<span class="tx-category">' + esc(tx.category) + ' <span class="tx-user">' + esc(tx.user_name) + '</span></span>';
                 html += '<span class="tx-amount">' + tx.amount + ' ' + esc(tx.currency) + '</span>';
                 html += '</div>';
                 html += '<div class="tx-bottom">';
@@ -284,9 +276,12 @@
             historyView.innerHTML = html;
             var items = historyView.querySelectorAll('.tx-item');
             for (var i = 0; i < items.length; i++) {
-                items[i].addEventListener('click', (function(idx) {
-                    return function() { showEdit(transactions[idx]); };
-                })(parseInt(items[i].getAttribute('data-idx'))));
+                var idx = parseInt(items[i].getAttribute('data-idx'));
+                if (transactions[idx].is_own) {
+                    items[i].addEventListener('click', (function(idx) {
+                        return function() { showEdit(transactions[idx]); };
+                    })(idx));
+                }
             }
         }
 
@@ -396,9 +391,6 @@
             return d.innerHTML;
         }
         } // end buildApp
-        } catch(e) {
-            dbg.innerHTML += '<pre style="color:red;">JS ERROR: ' + e.message + '\n' + e.stack + '</pre>';
-        }
     })();
     </script>
 </body>
