@@ -230,7 +230,7 @@ def get_webapp_keyboard(user_id: int = 0) -> ReplyKeyboardMarkup | ReplyKeyboard
         "t": make_api_token(user_id),
         "uid": str(user_id),
     }
-    url = f"{WEBAPP_API_URL}/app?{urllib.parse.urlencode(params, quote_via=urllib.parse.quote)}"
+    url = f"{WEBAPP_API_URL}/app#{urllib.parse.urlencode(params, quote_via=urllib.parse.quote)}"
     button = KeyboardButton(text="\U0001f4dd Добавить расход", web_app=WebAppInfo(url=url))
     return ReplyKeyboardMarkup([[button]], resize_keyboard=True)
 
