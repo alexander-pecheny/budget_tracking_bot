@@ -2,11 +2,13 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import re
 import signal
 import sqlite3
 import urllib.parse
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional
 
 import yaml
@@ -32,7 +34,6 @@ CATEGORIES: list[str] = config["categories"]
 CATEGORIES_NO_COMMENT: list[str] = config["categories_no_comment"]
 TIMEOUT_SECONDS: int = config["timeout_seconds"]
 EXCHANGE_RATES: dict[str, float] = config["exchange_rates"]
-WEBAPP_URL: str = config.get("webapp_url", "")
 WEBAPP_API_URL: str = config.get("webapp_api_url", "")
 WEBAPP_API_PORT: int = config.get("webapp_api_port", 0)
 
@@ -223,14 +224,13 @@ def is_authorized(user_id: int) -> bool:
 
 
 def get_webapp_keyboard(user_id: int = 0) -> ReplyKeyboardMarkup | ReplyKeyboardRemove:
-    if not WEBAPP_URL or not WEBAPP_API_URL:
+    if not WEBAPP_API_URL:
         return ReplyKeyboardRemove()
     params: dict[str, str] = {
-        "api": WEBAPP_API_URL,
         "t": make_api_token(user_id),
         "uid": str(user_id),
     }
-    url = f"{WEBAPP_URL}?{urllib.parse.urlencode(params, quote_via=urllib.parse.quote)}"
+    url = f"{WEBAPP_API_URL}/app?{urllib.parse.urlencode(params, quote_via=urllib.parse.quote)}"
     button = KeyboardButton(text="\U0001f4dd Добавить расход", web_app=WebAppInfo(url=url))
     return ReplyKeyboardMarkup([[button]], resize_keyboard=True)
 
@@ -664,6 +664,13 @@ async def cors_middleware(
     return response
 
 
+APP_HTML: str = (Path(__file__).parent / "app.html").read_text(encoding="utf-8")
+
+
+async def api_serve_app(request: web.Request) -> web.Response:
+    return web.Response(text=APP_HTML, content_type="text/html")
+
+
 async def api_get_config(request: web.Request) -> web.Response:
     user_id = validate_api_token(request)
     if user_id is None:
@@ -718,6 +725,7 @@ async def run() -> None:
     runner: Optional[web.AppRunner] = None
     if WEBAPP_API_PORT:
         api_app = web.Application(middlewares=[cors_middleware])
+        api_app.router.add_get("/app", api_serve_app)
         api_app.router.add_get("/config", api_get_config)
         api_app.router.add_get("/transactions", api_get_transactions)
         api_app.router.add_put("/transactions/{tid}", api_update_transaction)

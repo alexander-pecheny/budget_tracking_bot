@@ -3,8 +3,8 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <link rel="stylesheet" href="https://pecheny.me/qy/water.css">
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>:root{--background-body:#202b38;--background:#161f27;--background-alt:#1a242f;--selection:#1c76c5;--text-main:#dbdbdb;--text-bright:#fff;--text-muted:#a9b1ba;--links:#41adff;--focus:rgba(0,150,191,0.67);--border:#526980;--code:#ffbe85;--animation-duration:0.1s;--button-base:#0c151c;--button-hover:#040a0f;--scrollbar-thumb:var(--button-hover);--scrollbar-thumb-hover:#000;--form-placeholder:#a9a9a9;--form-text:#fff;--variable:#d941e2;--highlight:#efdb43;--select-arrow:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' height='63' width='117' fill='%23efefef'%3E%3Cpath d='M115 2c-1-2-4-2-5 0L59 53 7 2a4 4 0 00-5 5l54 54 2 2 3-2 54-54c2-1 2-4 0-5z'/%3E%3C/svg%3E")}body{font-family:system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Oxygen,Ubuntu,Cantarell,Fira Sans,Droid Sans,Helvetica Neue,sans-serif;line-height:1.4;max-width:800px;margin:20px auto;padding:0 10px;word-wrap:break-word;color:var(--text-main);background:var(--background-body);text-rendering:optimizeLegibility}button,input,textarea{transition:background-color var(--animation-duration) linear,border-color var(--animation-duration) linear,color var(--animation-duration) linear,box-shadow var(--animation-duration) linear,transform var(--animation-duration) ease}h1,h2,h3,h4,h5,h6,strong{color:var(--text-bright)}button,input,select,textarea{color:var(--form-text);background-color:var(--background);font-family:inherit;font-size:inherit;margin-right:6px;margin-bottom:6px;padding:10px;border:none;border-radius:6px;outline:none}button:focus,input:focus,select:focus,textarea:focus{box-shadow:0 0 0 2px var(--focus)}::-moz-placeholder{color:var(--form-placeholder)}::placeholder{color:var(--form-placeholder)}input{vertical-align:top;display:block}label{vertical-align:middle;margin-bottom:4px;display:inline-block}a{text-decoration:none;color:var(--links)}</style>
     <style>
         :root {
             --background-body: var(--tg-theme-bg-color, #fff);
@@ -86,13 +86,13 @@
         var tg = window.Telegram && window.Telegram.WebApp;
         var params = new URLSearchParams(window.location.search);
 
-        var apiUrl = params.get('api') || '';
+        var apiUrl = window.location.origin;
         var apiToken = params.get('t') || '';
         var userId = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user)
             ? tg.initDataUnsafe.user.id
             : parseInt(params.get('uid') || '0');
 
-        if (!apiUrl || !apiToken || !userId) {
+        if (!apiToken || !userId) {
             document.body.style.display = 'none';
             return;
         }
@@ -145,10 +145,10 @@
         app.innerHTML = '<div class="empty-state">\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430...</div>';
 
         apiFetch('/config').then(function(cfg) {
-            var categories = cfg.categories || [];
-            var currencies = cfg.currencies || [];
+            var categories = (cfg && cfg.categories) || [];
+            var currencies = (cfg && cfg.currencies) || [];
             if (!categories.length || !currencies.length) {
-                app.innerHTML = '<div class="empty-state">\u041e\u0448\u0438\u0431\u043a\u0430 \u043a\u043e\u043d\u0444\u0438\u0433\u0443\u0440\u0430\u0446\u0438\u0438</div>';
+                app.innerHTML = '<div class="empty-state">\u041e\u0448\u0438\u0431\u043a\u0430 \u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0438</div>';
                 return;
             }
             buildApp(categories, currencies);
