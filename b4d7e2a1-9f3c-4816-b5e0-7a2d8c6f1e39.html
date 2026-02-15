@@ -85,22 +85,19 @@
     (function() {
         var tg = window.Telegram && window.Telegram.WebApp;
         var params = new URLSearchParams(window.location.search);
-        var categories = (params.get('c') || '').split('|').filter(Boolean);
-        var currencies = (params.get('cur') || '').split('|').filter(Boolean);
-
-        if (!categories.length || !currencies.length) {
-            document.body.style.display = 'none';
-            return;
-        }
-
-        if (tg) { tg.ready(); tg.expand(); }
 
         var apiUrl = params.get('api') || '';
         var apiToken = params.get('t') || '';
         var userId = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user)
             ? tg.initDataUnsafe.user.id
             : parseInt(params.get('uid') || '0');
-        var hasApi = Boolean(apiUrl && apiToken && userId);
+
+        if (!apiUrl || !apiToken || !userId) {
+            document.body.style.display = 'none';
+            return;
+        }
+
+        if (tg) { tg.ready(); tg.expand(); }
 
         // State
         var mainBtnHandler = null;
@@ -143,14 +140,29 @@
             return fetch(apiUrl + path + '?user_id=' + userId, options).then(function(r) { return r.json(); });
         }
 
-        // Build UI
+        // Fetch config and build UI
         var app = document.getElementById('app');
+        app.innerHTML = '<div class="empty-state">\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430...</div>';
+
+        apiFetch('/config').then(function(cfg) {
+            var categories = cfg.categories || [];
+            var currencies = cfg.currencies || [];
+            if (!categories.length || !currencies.length) {
+                app.innerHTML = '<div class="empty-state">\u041e\u0448\u0438\u0431\u043a\u0430 \u043a\u043e\u043d\u0444\u0438\u0433\u0443\u0440\u0430\u0446\u0438\u0438</div>';
+                return;
+            }
+            buildApp(categories, currencies);
+        }).catch(function() {
+            app.innerHTML = '<div class="empty-state">\u041e\u0448\u0438\u0431\u043a\u0430 \u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0438</div>';
+        });
+
+        function buildApp(categories, currencies) {
         var html = '<div class="tabs">';
         html += '<button class="tab active" id="tab-btn-add">\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c</button>';
-        if (hasApi) html += '<button class="tab" id="tab-btn-history">\u0418\u0441\u0442\u043e\u0440\u0438\u044f</button>';
+        html += '<button class="tab" id="tab-btn-history">\u0418\u0441\u0442\u043e\u0440\u0438\u044f</button>';
         html += '</div>';
         html += '<div id="view-add" class="view active"></div>';
-        if (hasApi) html += '<div id="view-history" class="view"></div>';
+        html += '<div id="view-history" class="view"></div>';
         html += '<div id="view-edit" class="view"></div>';
         app.innerHTML = html;
 
@@ -179,7 +191,7 @@
         }
 
         document.getElementById('tab-btn-add').addEventListener('click', function() { showView('add'); });
-        if (hasApi) document.getElementById('tab-btn-history').addEventListener('click', function() { showView('history'); });
+        document.getElementById('tab-btn-history').addEventListener('click', function() { showView('history'); });
 
         // --- Add form ---
         var addCurrency = currencies[0];
@@ -374,6 +386,7 @@
             d.textContent = s;
             return d.innerHTML;
         }
+        } // end buildApp
     })();
     </script>
 </body>

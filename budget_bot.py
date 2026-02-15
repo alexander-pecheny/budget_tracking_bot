@@ -36,7 +36,8 @@ WEBAPP_URL: str = config.get("webapp_url", "")
 WEBAPP_API_URL: str = config.get("webapp_api_url", "")
 WEBAPP_API_PORT: int = config.get("webapp_api_port", 0)
 
-API_TOKEN: str = hashlib.sha256(f"webapp-{BOT_TOKEN}".encode()).hexdigest()[:32]
+def make_api_token(user_id: int) -> str:
+    return hashlib.sha256(f"webapp-{BOT_TOKEN}-{user_id}".encode()).hexdigest()[:32]
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -222,16 +223,13 @@ def is_authorized(user_id: int) -> bool:
 
 
 def get_webapp_keyboard(user_id: int = 0) -> ReplyKeyboardMarkup | ReplyKeyboardRemove:
-    if not WEBAPP_URL:
+    if not WEBAPP_URL or not WEBAPP_API_URL:
         return ReplyKeyboardRemove()
     params: dict[str, str] = {
-        "c": "|".join(CATEGORIES),
-        "cur": "|".join(CURRENCIES),
+        "api": WEBAPP_API_URL,
+        "t": make_api_token(user_id),
+        "uid": str(user_id),
     }
-    if WEBAPP_API_URL:
-        params["api"] = WEBAPP_API_URL
-        params["t"] = API_TOKEN
-        params["uid"] = str(user_id)
     url = f"{WEBAPP_URL}?{urllib.parse.urlencode(params, quote_via=urllib.parse.quote)}"
     button = KeyboardButton(text="\U0001f4dd Добавить расход", web_app=WebAppInfo(url=url))
     return ReplyKeyboardMarkup([[button]], resize_keyboard=True)
@@ -638,13 +636,13 @@ async def stats_me_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 def validate_api_token(request: web.Request) -> Optional[int]:
     token = request.headers.get("X-Api-Token", "")
-    if token != API_TOKEN:
-        return None
     try:
         user_id = int(request.query.get("user_id", "0"))
     except ValueError:
         return None
     if not is_authorized(user_id):
+        return None
+    if token != make_api_token(user_id):
         return None
     return user_id
 
@@ -664,6 +662,13 @@ async def cors_middleware(
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Api-Token"
     response.headers["Access-Control-Allow-Methods"] = "GET, PUT, DELETE, OPTIONS"
     return response
+
+
+async def api_get_config(request: web.Request) -> web.Response:
+    user_id = validate_api_token(request)
+    if user_id is None:
+        return web.json_response({"error": "unauthorized"}, status=401)
+    return web.json_response({"categories": CATEGORIES, "currencies": CURRENCIES})
 
 
 async def api_get_transactions(request: web.Request) -> web.Response:
@@ -713,6 +718,7 @@ async def run() -> None:
     runner: Optional[web.AppRunner] = None
     if WEBAPP_API_PORT:
         api_app = web.Application(middlewares=[cors_middleware])
+        api_app.router.add_get("/config", api_get_config)
         api_app.router.add_get("/transactions", api_get_transactions)
         api_app.router.add_put("/transactions/{tid}", api_update_transaction)
         api_app.router.add_delete("/transactions/{tid}", api_delete_transaction)
