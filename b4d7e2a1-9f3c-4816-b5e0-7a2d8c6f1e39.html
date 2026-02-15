@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <link rel="stylesheet" href="https://pecheny.me/qy/water.css">
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        :root {
+            --background-body: var(--tg-theme-bg-color, #fff);
+            --background: var(--tg-theme-secondary-bg-color, #f0f0f0);
+            --text-main: var(--tg-theme-text-color, #000);
+            --text-muted: var(--tg-theme-hint-color, #999);
+            --links: var(--tg-theme-link-color, #3390ec);
+            --focus: var(--tg-theme-button-color, #3390ec);
+            --border: var(--tg-theme-hint-color, #ddd);
+        }
+        body { padding: 0 16px 100px; margin: 0; }
+        .tabs { display: flex; margin: 0 -16px; border-bottom: 1px solid var(--border); }
+        .tab {
+            flex: 1; padding: 12px; border: none; background: transparent;
+            color: var(--text-muted); font-size: 15px; font-weight: 600;
+            cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;
+        }
+        .tab.active {
+            color: var(--tg-theme-button-color, #3390ec);
+            border-bottom-color: var(--tg-theme-button-color, #3390ec);
+        }
+        label { text-transform: uppercase; letter-spacing: 0.5px; font-size: 13px; display: block; margin-top: 16px; margin-bottom: 6px; }
+        .amount-input {
+            font-size: 32px; font-weight: 700; border: none;
+            border-bottom: 2px solid var(--border); border-radius: 0;
+            padding: 8px 0; background: transparent; width: 100%;
+        }
+        .amount-input:focus { border-bottom-color: var(--focus); box-shadow: none; }
+        .pills { display: flex; gap: 8px; flex-wrap: wrap; }
+        .pill {
+            padding: 8px 16px; border-radius: 20px; border: 2px solid var(--border);
+            background: transparent; color: var(--text-main); font-size: 15px;
+            font-weight: 500; cursor: pointer;
+        }
+        .pill.selected {
+            background: var(--tg-theme-button-color, #3390ec);
+            color: var(--tg-theme-button-text-color, #fff);
+            border-color: var(--tg-theme-button-color, #3390ec);
+        }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .grid-btn {
+            padding: 10px 8px; border-radius: 12px; border: 2px solid var(--border);
+            background: transparent; color: var(--text-main); font-size: 13px;
+            cursor: pointer; text-align: center; word-break: break-word;
+        }
+        .grid-btn.selected {
+            background: var(--tg-theme-button-color, #3390ec);
+            color: var(--tg-theme-button-text-color, #fff);
+            border-color: var(--tg-theme-button-color, #3390ec);
+        }
+        .comment-input {
+            border: none; border-bottom: 2px solid var(--border); border-radius: 0;
+            padding: 8px 0; background: transparent; width: 100%; font-size: 16px;
+        }
+        .comment-input:focus { border-bottom-color: var(--focus); box-shadow: none; }
+        .tx-item {
+            padding: 12px 0; border-bottom: 1px solid var(--border); cursor: pointer;
+        }
+        .tx-top { display: flex; justify-content: space-between; align-items: center; }
+        .tx-category { font-weight: 600; font-size: 15px; }
+        .tx-amount { font-weight: 700; font-size: 15px; white-space: nowrap; }
+        .tx-bottom { display: flex; justify-content: space-between; margin-top: 4px; }
+        .tx-comment { color: var(--text-muted); font-size: 13px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .tx-date { color: var(--text-muted); font-size: 13px; margin-left: 12px; white-space: nowrap; }
+        .delete-btn {
+            width: 100%; padding: 12px; margin-top: 24px; border: none;
+            border-radius: 12px; background: #ff3b30; color: #fff;
+            font-size: 16px; font-weight: 600; cursor: pointer;
+        }
+        .empty-state { text-align: center; color: var(--text-muted); padding: 40px 0; }
+        .view { display: none; }
+        .view.active { display: block; }
+    </style>
+</head>
+<body>
+    <div id="app"></div>
+    <script>
+    (function() {
+        var tg = window.Telegram && window.Telegram.WebApp;
+        var params = new URLSearchParams(window.location.search);
+        var categories = (params.get('c') || '').split('|').filter(Boolean);
+        var currencies = (params.get('cur') || '').split('|').filter(Boolean);
+
+        if (!categories.length || !currencies.length) {
+            document.body.style.display = 'none';
+            return;
+        }
+
+        if (tg) { tg.ready(); tg.expand(); }
+
+        var apiUrl = params.get('api') || '';
+        var apiToken = params.get('t') || '';
+        var userId = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user)
+            ? tg.initDataUnsafe.user.id
+            : parseInt(params.get('uid') || '0');
+        var hasApi = Boolean(apiUrl && apiToken && userId);
+
+        // State
+        var mainBtnHandler = null;
+        var transactions = [];
+        var editingTx = null;
+
+        // MainButton helper
+        var mainBtn = tg ? tg.MainButton : null;
+        function setMainBtn(text, handler) {
+            if (!mainBtn) return;
+            if (mainBtnHandler) { mainBtn.offClick(mainBtnHandler); mainBtnHandler = null; }
+            if (handler) {
+                mainBtn.setText(text);
+                mainBtnHandler = handler;
+                mainBtn.onClick(handler);
+            }
+        }
+
+        // BackButton helper
+        var backBtn = tg ? tg.BackButton : null;
+        var backBtnHandler = null;
+        function setBackBtn(handler) {
+            if (!backBtn) return;
+            if (backBtnHandler) { backBtn.offClick(backBtnHandler); backBtnHandler = null; }
+            if (handler) {
+                backBtnHandler = handler;
+                backBtn.onClick(handler);
+                backBtn.show();
+            } else {
+                backBtn.hide();
+            }
+        }
+
+        // API helper
+        function apiFetch(path, options) {
+            options = options || {};
+            options.headers = options.headers || {};
+            options.headers['X-Api-Token'] = apiToken;
+            options.headers['Content-Type'] = 'application/json';
+            return fetch(apiUrl + path + '?user_id=' + userId, options).then(function(r) { return r.json(); });
+        }
+
+        // Build UI
+        var app = document.getElementById('app');
+        var html = '<div class="tabs">';
+        html += '<button class="tab active" id="tab-btn-add">\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c</button>';
+        if (hasApi) html += '<button class="tab" id="tab-btn-history">\u0418\u0441\u0442\u043e\u0440\u0438\u044f</button>';
+        html += '</div>';
+        html += '<div id="view-add" class="view active"></div>';
+        if (hasApi) html += '<div id="view-history" class="view"></div>';
+        html += '<div id="view-edit" class="view"></div>';
+        app.innerHTML = html;
+
+        // --- Tab switching ---
+        function showView(name) {
+            var views = app.querySelectorAll('.view');
+            for (var i = 0; i < views.length; i++) views[i].classList.remove('active');
+            var tabs = app.querySelectorAll('.tab');
+            for (var i = 0; i < tabs.length; i++) tabs[i].classList.remove('active');
+
+            document.getElementById('view-' + name).classList.add('active');
+            if (mainBtn) mainBtn.hide();
+            setBackBtn(null);
+
+            if (name === 'add') {
+                var btn = document.getElementById('tab-btn-add');
+                if (btn) btn.classList.add('active');
+                setupAddMainBtn();
+            } else if (name === 'history') {
+                var btn = document.getElementById('tab-btn-history');
+                if (btn) btn.classList.add('active');
+                loadTransactions();
+            } else if (name === 'edit') {
+                setBackBtn(function() { showView('history'); });
+            }
+        }
+
+        document.getElementById('tab-btn-add').addEventListener('click', function() { showView('add'); });
+        if (hasApi) document.getElementById('tab-btn-history').addEventListener('click', function() { showView('history'); });
+
+        // --- Add form ---
+        var addCurrency = currencies[0];
+        var addCategory = null;
+
+        var addView = document.getElementById('view-add');
+        addView.innerHTML =
+            '<label>\u0421\u0443\u043c\u043c\u0430</label>' +
+            '<input type="text" inputmode="decimal" id="add-amount" class="amount-input" placeholder="0" autofocus>' +
+            '<label>\u0412\u0430\u043b\u044e\u0442\u0430</label>' +
+            '<div class="pills" id="add-currencies"></div>' +
+            '<label>\u041a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u044f</label>' +
+            '<div class="grid" id="add-categories"></div>' +
+            '<label>\u041a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0439</label>' +
+            '<input type="text" id="add-comment" class="comment-input" placeholder="\u041d\u0435\u043e\u0431\u044f\u0437\u0430\u0442\u0435\u043b\u044c\u043d\u043e">';
+
+        buildPills('add-currencies', currencies, addCurrency, function(v) { addCurrency = v; });
+        buildGrid('add-categories', categories, null, function(v) { addCategory = v; updateAddMainBtn(); });
+        document.getElementById('add-amount').addEventListener('input', updateAddMainBtn);
+
+        function getAddAmount() {
+            var val = (document.getElementById('add-amount').value || '').replace(',', '.');
+            var num = parseFloat(val);
+            return num > 0 ? num : 0;
+        }
+
+        function updateAddMainBtn() {
+            if (!mainBtn) return;
+            if (document.getElementById('view-add').classList.contains('active')) {
+                if (getAddAmount() > 0 && addCategory) mainBtn.show();
+                else mainBtn.hide();
+            }
+        }
+
+        function setupAddMainBtn() {
+            setMainBtn('\u0421\u043e\u0445\u0440\u0430\u043d\u0438\u0442\u044c', function() {
+                var amount = getAddAmount();
+                if (!amount || !addCategory) return;
+                mainBtn.showProgress();
+                var data = { amount: amount, currency: addCurrency, category: addCategory };
+                var comment = document.getElementById('add-comment').value.trim();
+                if (comment) data.comment = comment;
+                tg.sendData(JSON.stringify(data));
+            });
+            updateAddMainBtn();
+        }
+        setupAddMainBtn();
+
+        // --- History view ---
+        function loadTransactions() {
+            var historyView = document.getElementById('view-history');
+            historyView.innerHTML = '<div class="empty-state">\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430...</div>';
+            apiFetch('/transactions').then(function(data) {
+                transactions = data;
+                renderTransactions();
+            }).catch(function() {
+                historyView.innerHTML = '<div class="empty-state">\u041e\u0448\u0438\u0431\u043a\u0430 \u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0438</div>';
+            });
+        }
+
+        function renderTransactions() {
+            var historyView = document.getElementById('view-history');
+            if (!transactions.length) {
+                historyView.innerHTML = '<div class="empty-state">\u041d\u0435\u0442 \u0442\u0440\u0430\u043d\u0437\u0430\u043a\u0446\u0438\u0439</div>';
+                return;
+            }
+            var html = '';
+            for (var i = 0; i < transactions.length; i++) {
+                var tx = transactions[i];
+                var date = tx.timestamp ? tx.timestamp.substring(5, 16).replace('T', ' ') : '';
+                html += '<div class="tx-item" data-idx="' + i + '">';
+                html += '<div class="tx-top">';
+                html += '<span class="tx-category">' + esc(tx.category) + '</span>';
+                html += '<span class="tx-amount">' + tx.amount + ' ' + esc(tx.currency) + '</span>';
+                html += '</div>';
+                html += '<div class="tx-bottom">';
+                html += '<span class="tx-comment">' + esc(tx.comment || '') + '</span>';
+                html += '<span class="tx-date">' + esc(date) + '</span>';
+                html += '</div></div>';
+            }
+            historyView.innerHTML = html;
+            var items = historyView.querySelectorAll('.tx-item');
+            for (var i = 0; i < items.length; i++) {
+                items[i].addEventListener('click', (function(idx) {
+                    return function() { showEdit(transactions[idx]); };
+                })(parseInt(items[i].getAttribute('data-idx'))));
+            }
+        }
+
+        // --- Edit view ---
+        var editCurrency = null;
+        var editCategory = null;
+
+        function showEdit(tx) {
+            editingTx = tx;
+            editCurrency = tx.currency;
+            editCategory = tx.category;
+
+            var editView = document.getElementById('view-edit');
+            editView.innerHTML =
+                '<label>\u0421\u0443\u043c\u043c\u0430</label>' +
+                '<input type="text" inputmode="decimal" id="edit-amount" class="amount-input" value="' + tx.amount + '">' +
+                '<label>\u0412\u0430\u043b\u044e\u0442\u0430</label>' +
+                '<div class="pills" id="edit-currencies"></div>' +
+                '<label>\u041a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u044f</label>' +
+                '<div class="grid" id="edit-categories"></div>' +
+                '<label>\u041a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0439</label>' +
+                '<input type="text" id="edit-comment" class="comment-input" value="' + esc(tx.comment || '') + '">' +
+                '<button class="delete-btn" id="edit-delete">\u0423\u0434\u0430\u043b\u0438\u0442\u044c</button>';
+
+            buildPills('edit-currencies', currencies, editCurrency, function(v) { editCurrency = v; });
+            buildGrid('edit-categories', categories, editCategory, function(v) { editCategory = v; updateEditMainBtn(); });
+            document.getElementById('edit-amount').addEventListener('input', updateEditMainBtn);
+            document.getElementById('edit-delete').addEventListener('click', function() {
+                tg.showConfirm('\u0423\u0434\u0430\u043b\u0438\u0442\u044c \u0442\u0440\u0430\u043d\u0437\u0430\u043a\u0446\u0438\u044e?', function(ok) {
+                    if (!ok) return;
+                    apiFetch('/transactions/' + editingTx.id, { method: 'DELETE' }).then(function() {
+                        if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+                        showView('history');
+                    });
+                });
+            });
+
+            showView('edit');
+            setMainBtn('\u0421\u043e\u0445\u0440\u0430\u043d\u0438\u0442\u044c', function() {
+                var amount = getEditAmount();
+                if (!amount || !editCategory) return;
+                mainBtn.showProgress();
+                var body = { amount: amount, currency: editCurrency, category: editCategory, comment: document.getElementById('edit-comment').value.trim() || null };
+                apiFetch('/transactions/' + editingTx.id, { method: 'PUT', body: JSON.stringify(body) }).then(function() {
+                    mainBtn.hideProgress();
+                    if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+                    showView('history');
+                }).catch(function() {
+                    mainBtn.hideProgress();
+                });
+            });
+            updateEditMainBtn();
+        }
+
+        function getEditAmount() {
+            var val = (document.getElementById('edit-amount').value || '').replace(',', '.');
+            var num = parseFloat(val);
+            return num > 0 ? num : 0;
+        }
+
+        function updateEditMainBtn() {
+            if (!mainBtn) return;
+            if (document.getElementById('view-edit').classList.contains('active')) {
+                if (getEditAmount() > 0 && editCategory) mainBtn.show();
+                else mainBtn.hide();
+            }
+        }
+
+        // --- Shared UI builders ---
+        function buildPills(containerId, items, selected, onSelect) {
+            var container = document.getElementById(containerId);
+            container.innerHTML = '';
+            items.forEach(function(item) {
+                var btn = document.createElement('button');
+                btn.textContent = item;
+                btn.className = 'pill' + (item === selected ? ' selected' : '');
+                btn.addEventListener('click', function() {
+                    container.querySelectorAll('.pill').forEach(function(b) { b.classList.remove('selected'); });
+                    btn.classList.add('selected');
+                    if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+                    onSelect(item);
+                });
+                container.appendChild(btn);
+            });
+        }
+
+        function buildGrid(containerId, items, selected, onSelect) {
+            var container = document.getElementById(containerId);
+            container.innerHTML = '';
+            items.forEach(function(item) {
+                var btn = document.createElement('button');
+                btn.textContent = item;
+                btn.className = 'grid-btn' + (item === selected ? ' selected' : '');
+                btn.addEventListener('click', function() {
+                    container.querySelectorAll('.grid-btn').forEach(function(b) { b.classList.remove('selected'); });
+                    btn.classList.add('selected');
+                    if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+                    onSelect(item);
+                });
+                container.appendChild(btn);
+            });
+        }
+
+        function esc(s) {
+            var d = document.createElement('div');
+            d.textContent = s;
+            return d.innerHTML;
+        }
+    })();
+    </script>
+</body>
+</html>
