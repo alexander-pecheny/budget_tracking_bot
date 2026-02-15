@@ -83,6 +83,8 @@
     <div id="app"></div>
     <script>
     (function() {
+        var dbg = document.getElementById('app');
+        try {
         var tg = window.Telegram && window.Telegram.WebApp;
         var params = new URLSearchParams(window.location.search);
 
@@ -92,8 +94,17 @@
             ? tg.initDataUnsafe.user.id
             : parseInt(params.get('uid') || '0');
 
+        dbg.innerHTML = '<pre style="color:red;font-size:12px;">'
+            + 'tg: ' + !!tg
+            + '\ninitDataUnsafe: ' + JSON.stringify(tg && tg.initDataUnsafe)
+            + '\napiToken: ' + (apiToken ? apiToken.substring(0,8) + '...' : 'EMPTY')
+            + '\nuserId: ' + userId
+            + '\nlocation.origin: ' + window.location.origin
+            + '\nlocation.search: ' + window.location.search
+            + '</pre>';
+
         if (!apiToken || !userId) {
-            document.body.style.display = 'none';
+            dbg.innerHTML += '<pre style="color:red;">GUARD FIRED: apiToken=' + !!apiToken + ' userId=' + !!userId + '</pre>';
             return;
         }
 
@@ -387,6 +398,9 @@
             return d.innerHTML;
         }
         } // end buildApp
+        } catch(e) {
+            dbg.innerHTML += '<pre style="color:red;">JS ERROR: ' + e.message + '\n' + e.stack + '</pre>';
+        }
     })();
     </script>
 </body>
