@@ -226,11 +226,8 @@ def is_authorized(user_id: int) -> bool:
 def get_webapp_keyboard(user_id: int = 0) -> ReplyKeyboardMarkup | ReplyKeyboardRemove:
     if not WEBAPP_API_URL:
         return ReplyKeyboardRemove()
-    params: dict[str, str] = {
-        "t": make_api_token(user_id),
-        "uid": str(user_id),
-    }
-    url = f"{WEBAPP_API_URL}/app#{urllib.parse.urlencode(params, quote_via=urllib.parse.quote)}"
+    token = make_api_token(user_id)
+    url = f"{WEBAPP_API_URL}/app/{token}/{user_id}"
     button = KeyboardButton(text="\U0001f4dd Добавить расход", web_app=WebAppInfo(url=url))
     return ReplyKeyboardMarkup([[button]], resize_keyboard=True)
 
@@ -725,7 +722,7 @@ async def run() -> None:
     runner: Optional[web.AppRunner] = None
     if WEBAPP_API_PORT:
         api_app = web.Application(middlewares=[cors_middleware])
-        api_app.router.add_get("/app", api_serve_app)
+        api_app.router.add_get("/app/{token}/{uid}", api_serve_app)
         api_app.router.add_get("/config", api_get_config)
         api_app.router.add_get("/transactions", api_get_transactions)
         api_app.router.add_put("/transactions/{tid}", api_update_transaction)
