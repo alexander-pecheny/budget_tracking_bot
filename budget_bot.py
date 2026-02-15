@@ -1,11 +1,17 @@
+import asyncio
+import hashlib
+import json
 import logging
 import re
+import signal
 import sqlite3
+import urllib.parse
 from datetime import datetime, timedelta
 from typing import Optional
 
 import yaml
-from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
+from aiohttp import web
+from telegram import KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update, WebAppInfo
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -26,6 +32,11 @@ CATEGORIES: list[str] = config["categories"]
 CATEGORIES_NO_COMMENT: list[str] = config["categories_no_comment"]
 TIMEOUT_SECONDS: int = config["timeout_seconds"]
 EXCHANGE_RATES: dict[str, float] = config["exchange_rates"]
+WEBAPP_URL: str = config.get("webapp_url", "")
+WEBAPP_API_URL: str = config.get("webapp_api_url", "")
+WEBAPP_API_PORT: int = config.get("webapp_api_port", 0)
+
+API_TOKEN: str = hashlib.sha256(f"webapp-{BOT_TOKEN}".encode()).hexdigest()[:32]
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -92,7 +103,7 @@ class BudgetDatabase:
             cursor.execute(
                 """
                 SELECT category, currency, SUM(amount) as total
-                FROM transactions 
+                FROM transactions
                 WHERE user_id = ? AND timestamp BETWEEN ? AND ?
                 GROUP BY category, currency
                 ORDER BY total DESC
@@ -103,7 +114,7 @@ class BudgetDatabase:
             cursor.execute(
                 """
                 SELECT category, currency, SUM(amount) as total
-                FROM transactions 
+                FROM transactions
                 WHERE timestamp BETWEEN ? AND ?
                 GROUP BY category, currency
                 ORDER BY total DESC
@@ -121,9 +132,9 @@ class BudgetDatabase:
 
         cursor.execute(
             """
-            SELECT id FROM transactions 
-            WHERE user_id = ? 
-            ORDER BY timestamp DESC, id DESC 
+            SELECT id FROM transactions
+            WHERE user_id = ?
+            ORDER BY timestamp DESC, id DESC
             LIMIT 1
         """,
             (user_id,),
@@ -140,6 +151,60 @@ class BudgetDatabase:
         conn.close()
         return True
 
+    def get_recent_transactions(self, user_id: int, limit: int = 30) -> list[dict]:
+        conn: sqlite3.Connection = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor: sqlite3.Cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, amount, currency, category, comment, timestamp
+            FROM transactions
+            WHERE user_id = ?
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ?
+        """,
+            (user_id, limit),
+        )
+        results = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return results
+
+    def update_transaction(
+        self,
+        transaction_id: int,
+        user_id: int,
+        amount: float,
+        currency: str,
+        category: str,
+        comment: Optional[str] = None,
+    ) -> bool:
+        conn: sqlite3.Connection = sqlite3.connect(self.db_path)
+        cursor: sqlite3.Cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE transactions
+            SET amount = ?, currency = ?, category = ?, comment = ?
+            WHERE id = ? AND user_id = ?
+        """,
+            (amount, currency, category, comment, transaction_id, user_id),
+        )
+        success: bool = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+        return success
+
+    def delete_transaction(self, transaction_id: int, user_id: int) -> bool:
+        conn: sqlite3.Connection = sqlite3.connect(self.db_path)
+        cursor: sqlite3.Cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM transactions WHERE id = ? AND user_id = ?",
+            (transaction_id, user_id),
+        )
+        success: bool = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+        return success
+
 
 db: BudgetDatabase = BudgetDatabase()
 
@@ -153,12 +218,80 @@ def is_authorized(user_id: int) -> bool:
     return user_id in AUTHORIZED_USERS
 
 
+# --- Web App keyboard ---
+
+
+def get_webapp_keyboard(user_id: int = 0) -> ReplyKeyboardMarkup | ReplyKeyboardRemove:
+    if not WEBAPP_URL:
+        return ReplyKeyboardRemove()
+    params: dict[str, str] = {
+        "c": "|".join(CATEGORIES),
+        "cur": "|".join(CURRENCIES),
+    }
+    if WEBAPP_API_URL:
+        params["api"] = WEBAPP_API_URL
+        params["t"] = API_TOKEN
+        params["uid"] = str(user_id)
+    url = f"{WEBAPP_URL}?{urllib.parse.urlencode(params, quote_via=urllib.parse.quote)}"
+    button = KeyboardButton(text="\U0001f4dd Добавить расход", web_app=WebAppInfo(url=url))
+    return ReplyKeyboardMarkup([[button]], resize_keyboard=True)
+
+
+# --- Bot handlers ---
+
+
+async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(update.effective_user.id):
+        return
+
+    try:
+        data = json.loads(update.effective_message.web_app_data.data)
+    except (json.JSONDecodeError, AttributeError):
+        await update.effective_message.reply_text("\u274c Ошибка данных.")
+        return
+
+    amount = data.get("amount")
+    currency = data.get("currency")
+    category = data.get("category")
+    comment = data.get("comment")
+
+    if not amount or not isinstance(amount, (int, float)) or amount <= 0:
+        await update.effective_message.reply_text("\u274c Некорректная сумма.")
+        return
+    if currency not in CURRENCIES:
+        await update.effective_message.reply_text("\u274c Некорректная валюта.")
+        return
+    if category not in CATEGORIES:
+        await update.effective_message.reply_text("\u274c Некорректная категория.")
+        return
+
+    db.add_transaction(
+        user_id=update.effective_user.id,
+        amount=float(amount),
+        currency=currency,
+        category=category,
+        comment=comment if comment else None,
+    )
+
+    message: str = (
+        f"\u2705 Транзакция добавлена!\nСумма: {amount} {currency}\nКатегория: {category}"
+    )
+    if comment:
+        message += f"\nКомментарий: {comment}"
+
+    await update.effective_message.reply_text(
+        message, reply_markup=get_webapp_keyboard(update.effective_user.id)
+    )
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_authorized(update.effective_user.id):
         return
 
     await update.message.reply_text(
-        "Привет! Отправь сумму числом для добавления транзакции или используй /stats для просмотра статистики."
+        "Привет! Нажмите кнопку ниже или отправьте сумму числом.\n"
+        "/stats — статистика, /delete_last — удалить последнюю.",
+        reply_markup=get_webapp_keyboard(update.effective_user.id),
     )
 
 
@@ -274,12 +407,12 @@ async def save_transaction(
     db.add_transaction(user_id, amount, currency, category, comment)
 
     message: str = (
-        f"✅ Транзакция добавлена!\nСумма: {amount} {currency}\nКатегория: {category}"
+        f"\u2705 Транзакция добавлена!\nСумма: {amount} {currency}\nКатегория: {category}"
     )
     if comment:
         message += f"\nКомментарий: {comment}"
 
-    await update.message.reply_text(message, reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text(message, reply_markup=get_webapp_keyboard(user_id))
 
     context.user_data.clear()
 
@@ -287,7 +420,7 @@ async def save_transaction(
 async def timeout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
         "Транзакция не была добавлена так как вы не ответили в течение 5 минут.",
-        reply_markup=ReplyKeyboardRemove(),
+        reply_markup=get_webapp_keyboard(update.effective_user.id),
     )
     context.user_data.clear()
     return ConversationHandler.END
@@ -369,7 +502,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         grand_total_rsd += amount_rsd
 
     message: str = (
-        f"📊 Статистика расходов с {start_date.date()} по {end_date.date()}:\n\n"
+        f"\U0001f4ca Статистика расходов с {start_date.date()} по {end_date.date()}:\n\n"
     )
 
     for category, total_rsd in sorted(
@@ -380,7 +513,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         message += f"{category}: {total_rsd:.1f} RSD ({percentage:.1f}%)\n"
 
-    message += f"\n💰 Общий расход: {grand_total_rsd:.1f} RSD"
+    message += f"\n\U0001f4b0 Общий расход: {grand_total_rsd:.1f} RSD"
 
     await update.message.reply_text(message)
 
@@ -396,9 +529,9 @@ async def delete_last_command(
     try:
         success: bool = db.delete_last_transaction(user_id)
         if success:
-            await update.message.reply_text("✅ Последняя транзакция удалена.")
+            await update.message.reply_text("\u2705 Последняя транзакция удалена.")
         else:
-            await update.message.reply_text("❌ Нет транзакций для удаления.")
+            await update.message.reply_text("\u274c Нет транзакций для удаления.")
     except Exception as e:
         await update.message.reply_text(
             f"Ошибка при удалении транзакции: {type(e)} {e}"
@@ -484,7 +617,7 @@ async def stats_me_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         grand_total_rsd += amount_rsd
 
     message: str = (
-        f"📊 Ваша статистика расходов с {start_date.date()} по {end_date.date()}:\n\n"
+        f"\U0001f4ca Ваша статистика расходов с {start_date.date()} по {end_date.date()}:\n\n"
     )
 
     for category, total_rsd in sorted(
@@ -495,12 +628,101 @@ async def stats_me_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         message += f"{category}: {total_rsd:.1f} RSD ({percentage:.1f}%)\n"
 
-    message += f"\n💰 Ваш общий расход: {grand_total_rsd:.1f} RSD"
+    message += f"\n\U0001f4b0 Ваш общий расход: {grand_total_rsd:.1f} RSD"
 
     await update.message.reply_text(message)
 
 
-def main() -> None:
+# --- API server ---
+
+
+def validate_api_token(request: web.Request) -> Optional[int]:
+    token = request.headers.get("X-Api-Token", "")
+    if token != API_TOKEN:
+        return None
+    try:
+        user_id = int(request.query.get("user_id", "0"))
+    except ValueError:
+        return None
+    if not is_authorized(user_id):
+        return None
+    return user_id
+
+
+@web.middleware
+async def cors_middleware(
+    request: web.Request, handler: web.RequestHandler
+) -> web.StreamResponse:
+    if request.method == "OPTIONS":
+        response = web.Response()
+    else:
+        try:
+            response = await handler(request)
+        except web.HTTPException as e:
+            response = e
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Api-Token"
+    response.headers["Access-Control-Allow-Methods"] = "GET, PUT, DELETE, OPTIONS"
+    return response
+
+
+async def api_get_transactions(request: web.Request) -> web.Response:
+    user_id = validate_api_token(request)
+    if user_id is None:
+        return web.json_response({"error": "unauthorized"}, status=401)
+    transactions = db.get_recent_transactions(user_id)
+    return web.json_response(transactions)
+
+
+async def api_update_transaction(request: web.Request) -> web.Response:
+    user_id = validate_api_token(request)
+    if user_id is None:
+        return web.json_response({"error": "unauthorized"}, status=401)
+    tid = int(request.match_info["tid"])
+    body = await request.json()
+    amount = body.get("amount")
+    currency = body.get("currency")
+    category = body.get("category")
+    comment = body.get("comment")
+    if not amount or currency not in CURRENCIES or category not in CATEGORIES:
+        return web.json_response({"error": "invalid data"}, status=400)
+    success = db.update_transaction(
+        tid, user_id, float(amount), currency, category, comment or None
+    )
+    if not success:
+        return web.json_response({"error": "not found"}, status=404)
+    return web.json_response({"ok": True})
+
+
+async def api_delete_transaction(request: web.Request) -> web.Response:
+    user_id = validate_api_token(request)
+    if user_id is None:
+        return web.json_response({"error": "unauthorized"}, status=401)
+    tid = int(request.match_info["tid"])
+    success = db.delete_transaction(tid, user_id)
+    if not success:
+        return web.json_response({"error": "not found"}, status=404)
+    return web.json_response({"ok": True})
+
+
+# --- Main ---
+
+
+async def run() -> None:
+    # Start API server if configured
+    runner: Optional[web.AppRunner] = None
+    if WEBAPP_API_PORT:
+        api_app = web.Application(middlewares=[cors_middleware])
+        api_app.router.add_get("/transactions", api_get_transactions)
+        api_app.router.add_put("/transactions/{tid}", api_update_transaction)
+        api_app.router.add_delete("/transactions/{tid}", api_delete_transaction)
+        runner = web.AppRunner(api_app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", WEBAPP_API_PORT)
+        await site.start()
+        print(f"API server running on port {WEBAPP_API_PORT}")
+
+    # Build bot application
     application: Application = Application.builder().token(BOT_TOKEN).build()
 
     conv_handler: ConversationHandler = ConversationHandler(
@@ -519,10 +741,35 @@ def main() -> None:
     application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("delete_last", delete_last_command))
     application.add_handler(CommandHandler("stats_me", stats_me_command))
+    application.add_handler(
+        MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_webapp_data)
+    )
     application.add_handler(conv_handler)
 
+    # Start bot
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
     print("Bot starting...")
-    application.run_polling()
+
+    # Wait for shutdown signal
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop.set)
+    await stop.wait()
+
+    # Cleanup
+    print("Shutting down...")
+    await application.updater.stop()
+    await application.stop()
+    await application.shutdown()
+    if runner:
+        await runner.cleanup()
+
+
+def main() -> None:
+    asyncio.run(run())
 
 
 if __name__ == "__main__":
