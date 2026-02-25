@@ -204,10 +204,10 @@
             '<input type="text" inputmode="decimal" id="add-amount" class="amount-input" placeholder="0" autofocus>' +
             '<label>\u0412\u0430\u043b\u044e\u0442\u0430</label>' +
             '<div class="pills" id="add-currencies"></div>' +
-            '<label>\u041a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u044f</label>' +
-            '<div class="grid" id="add-categories"></div>' +
             '<label>\u041a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0439</label>' +
-            '<input type="text" id="add-comment" class="comment-input" placeholder="\u041d\u0435\u043e\u0431\u044f\u0437\u0430\u0442\u0435\u043b\u044c\u043d\u043e">';
+            '<input type="text" id="add-comment" class="comment-input" placeholder="\u041d\u0435\u043e\u0431\u044f\u0437\u0430\u0442\u0435\u043b\u044c\u043d\u043e">' +
+            '<label>\u041a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u044f</label>' +
+            '<div class="grid" id="add-categories"></div>';
 
         buildPills('add-currencies', currencies, addCurrency, function(v) { addCurrency = v; });
         buildGrid('add-categories', categories, null, function(v) { addCategory = v; updateAddMainBtn(); });
@@ -300,10 +300,10 @@
                 '<input type="text" inputmode="decimal" id="edit-amount" class="amount-input" value="' + tx.amount + '">' +
                 '<label>\u0412\u0430\u043b\u044e\u0442\u0430</label>' +
                 '<div class="pills" id="edit-currencies"></div>' +
-                '<label>\u041a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u044f</label>' +
-                '<div class="grid" id="edit-categories"></div>' +
                 '<label>\u041a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0439</label>' +
                 '<input type="text" id="edit-comment" class="comment-input" value="' + esc(tx.comment || '') + '">' +
+                '<label>\u041a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u044f</label>' +
+                '<div class="grid" id="edit-categories"></div>' +
                 '<button class="delete-btn" id="edit-delete">\u0423\u0434\u0430\u043b\u0438\u0442\u044c</button>';
 
             buildPills('edit-currencies', currencies, editCurrency, function(v) { editCurrency = v; });
