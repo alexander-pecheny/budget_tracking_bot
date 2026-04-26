@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import hashlib
 import json
 import logging
@@ -6,13 +7,17 @@ import os
 import re
 import signal
 import sqlite3
+import subprocess
+import tempfile
 import urllib.parse
 from datetime import datetime, timedelta
+from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import yaml
-from aiohttp import web
+from aiohttp import ClientSession, web
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from telegram import KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update, WebAppInfo
 from telegram.ext import (
     Application,
@@ -31,12 +36,55 @@ AUTHORIZED_USERS: list[int] = config["authorized_users"]
 DATABASE_PATH: str = config["database_path"]
 CURRENCIES: list[str] = config["currencies"]
 CATEGORIES: list[str] = config["categories"]
-CATEGORIES_NO_COMMENT: list[str] = config["categories_no_comment"]
+CATEGORIES_NO_COMMENT: list[str] = config.get("categories_no_comment", [])
 TIMEOUT_SECONDS: int = config["timeout_seconds"]
 EXCHANGE_RATES: dict[str, float] = config["exchange_rates"]
 WEBAPP_API_URL: str = config.get("webapp_api_url", "")
 WEBAPP_API_PORT: int = config.get("webapp_api_port", 0)
 USER_NAMES: dict[int, str] = {int(k): v for k, v in config.get("user_names", {}).items()}
+OPENROUTER_API_KEY: str = config.get("openrouter_api_key") or os.getenv(
+    "OPENROUTER_API_KEY", ""
+)
+OPENROUTER_API_URL: str = config.get(
+    "openrouter_api_url", "https://openrouter.ai/api/v1/chat/completions"
+)
+OPENROUTER_MODEL: str = config.get("openrouter_model", "google/gemini-2.5-flash-lite")
+OPENROUTER_APP_NAME: str = config.get("openrouter_app_name", "Budget Tracking Bot")
+OPENROUTER_SITE_URL: str = config.get("openrouter_site_url", "")
+
+
+def make_config_enum(name: str, values: list[str]) -> type[Enum]:
+    return Enum(name, {f"VALUE_{i}": value for i, value in enumerate(values)})
+
+
+CurrencyEnum = make_config_enum("CurrencyEnum", CURRENCIES)
+CategoryEnum = make_config_enum("CategoryEnum", CATEGORIES)
+
+
+class VoiceTransaction(BaseModel):
+    model_config = ConfigDict(extra="forbid", use_enum_values=True)
+
+    amount: float = Field(
+        gt=0,
+        description="Positive spending amount exactly as spoken, without currency conversion.",
+    )
+    currency: CurrencyEnum = Field(
+        description=(
+            "Currency enum value. The speech is in Russian; map Russian mentions "
+            "of Serbian dinars to RSD."
+        )
+    )
+    category: CategoryEnum = Field(
+        description="Best matching spending category enum value."
+    )
+    comment: str = Field(
+        min_length=1,
+        description=(
+            "Full transcript of the user's speech as detected from the audio, "
+            "in the original language."
+        ),
+    )
+
 
 def make_api_token(user_id: int) -> str:
     return hashlib.sha256(f"webapp-{BOT_TOKEN}-{user_id}".encode()).hexdigest()[:32]
@@ -238,6 +286,165 @@ def is_authorized(user_id: int) -> bool:
     return user_id in AUTHORIZED_USERS
 
 
+def get_openrouter_headers() -> dict[str, str]:
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    if OPENROUTER_SITE_URL:
+        headers["HTTP-Referer"] = OPENROUTER_SITE_URL
+    if OPENROUTER_APP_NAME:
+        headers["X-Title"] = OPENROUTER_APP_NAME
+    return headers
+
+
+def get_voice_transaction_schema() -> dict[str, Any]:
+    schema = VoiceTransaction.model_json_schema()
+    schema.pop("$defs", None)
+    schema["additionalProperties"] = False
+    schema["properties"]["currency"] = {
+        "type": "string",
+        "enum": CURRENCIES,
+        "description": "Currency enum value. Map Serbian dinar/dinars/dinara to RSD.",
+    }
+    schema["properties"]["category"] = {
+        "type": "string",
+        "enum": CATEGORIES,
+        "description": "Best matching spending category enum value.",
+    }
+    return schema
+
+
+def get_voice_extraction_prompt() -> str:
+    categories = ", ".join(CATEGORIES)
+    currencies = ", ".join(CURRENCIES)
+    return (
+        "The attached voice message is in Russian. "
+        "Extract one spending transaction from it. "
+        "Return only the structured JSON requested by the schema. "
+        f"Allowed currencies: {currencies}. "
+        f"Allowed categories: {categories}. "
+        "Use RSD for Russian mentions of Serbian dinars, including "
+        "'динар', 'динара', 'динаров', and 'сербских динаров'. "
+        "The comment field must be the full transcript of the user's speech as "
+        "you detected it, in Russian, not a summary or translation."
+    )
+
+
+async def parse_voice_transaction(audio_base64: str) -> VoiceTransaction:
+    if not OPENROUTER_API_KEY:
+        raise RuntimeError("OpenRouter API key is not configured.")
+
+    payload: dict[str, Any] = {
+        "model": OPENROUTER_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You parse personal expense voice messages into a single "
+                    "validated spending transaction."
+                ),
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": get_voice_extraction_prompt()},
+                    {
+                        "type": "input_audio",
+                        "input_audio": {
+                            "data": audio_base64,
+                            "format": "ogg",
+                        },
+                    },
+                ],
+            },
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "voice_transaction",
+                "strict": True,
+                "schema": get_voice_transaction_schema(),
+            },
+        },
+        "provider": {"require_parameters": True},
+        "temperature": 0,
+        "max_tokens": 300,
+    }
+
+    async with ClientSession() as session:
+        async with session.post(
+            OPENROUTER_API_URL,
+            headers=get_openrouter_headers(),
+            json=payload,
+            timeout=60,
+        ) as response:
+            response_text = await response.text()
+            if response.status >= 400:
+                logging.error("OpenRouter error %s: %s", response.status, response_text)
+                raise RuntimeError("OpenRouter request failed.")
+
+    try:
+        response_data = json.loads(response_text)
+        content = response_data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, json.JSONDecodeError, TypeError) as e:
+        logging.error("Unexpected OpenRouter response: %s", response_text)
+        raise RuntimeError("OpenRouter returned an unexpected response.") from e
+
+    if not isinstance(content, str):
+        raise RuntimeError("OpenRouter response did not include JSON content.")
+
+    try:
+        parsed_content = json.loads(content)
+    except json.JSONDecodeError as e:
+        logging.error("OpenRouter returned invalid JSON: %s", content)
+        raise RuntimeError("OpenRouter returned invalid JSON.") from e
+
+    return VoiceTransaction.model_validate(parsed_content)
+
+
+async def transcode_to_ogg_vorbis(input_path: Path, output_path: Path) -> None:
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(input_path),
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-codec:a",
+            "libvorbis",
+            "-q:a",
+            "3",
+            str(output_path),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except FileNotFoundError as e:
+        raise RuntimeError("ffmpeg is required to transcode voice messages.") from e
+
+    _, stderr = await process.communicate()
+    if process.returncode != 0:
+        logging.error("ffmpeg failed: %s", stderr.decode("utf-8", errors="replace"))
+        raise RuntimeError("Failed to transcode voice message.")
+
+
+async def download_voice_audio_base64(update: Update) -> str:
+    if not update.message or not update.message.voice:
+        raise RuntimeError("No voice message found.")
+
+    voice_file = await update.message.voice.get_file()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        source_path = Path(tmpdir) / "voice-opus.ogg"
+        vorbis_path = Path(tmpdir) / "voice-vorbis.ogg"
+        await voice_file.download_to_drive(custom_path=source_path)
+        await transcode_to_ogg_vorbis(source_path, vorbis_path)
+        return base64.b64encode(vorbis_path.read_bytes()).decode("ascii")
+
+
 # --- Web App keyboard ---
 
 
@@ -297,12 +504,71 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
 
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(update.effective_user.id):
+        return
+
+    if not OPENROUTER_API_KEY:
+        await update.message.reply_text(
+            "❌ OpenRouter API key is not configured. Set OPENROUTER_API_KEY "
+            "or openrouter_api_key in config.yaml."
+        )
+        return
+
+    await update.message.reply_text("Обрабатываю голосовое сообщение...")
+
+    try:
+        audio_base64 = await download_voice_audio_base64(update)
+        transaction = await parse_voice_transaction(audio_base64)
+    except ValidationError as e:
+        logging.exception("Voice transaction validation failed: %s", e)
+        await update.message.reply_text(
+            "❌ Не удалось распознать расход в голосовом сообщении."
+        )
+        return
+    except Exception as e:
+        logging.exception("Voice transaction parsing failed: %s", e)
+        await update.message.reply_text(
+            f"❌ Ошибка при обработке голосового сообщения: {type(e).__name__}"
+        )
+        return
+
+    amount = float(transaction.amount)
+    currency = str(transaction.currency)
+    category = str(transaction.category)
+    comment = transaction.comment.strip()
+
+    if currency not in CURRENCIES or category not in CATEGORIES:
+        await update.message.reply_text(
+            "❌ Модель вернула некорректную валюту или категорию."
+        )
+        return
+
+    db.add_transaction(
+        user_id=update.effective_user.id,
+        amount=amount,
+        currency=currency,
+        category=category,
+        comment=comment,
+    )
+
+    message = (
+        f"✅ Транзакция добавлена!\n"
+        f"Сумма: {amount:g} {currency}\n"
+        f"Категория: {category}\n"
+        f"Комментарий: {comment}"
+    )
+    await update.message.reply_text(
+        message, reply_markup=get_webapp_keyboard(update.effective_user.id)
+    )
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_authorized(update.effective_user.id):
         return
 
     await update.message.reply_text(
-        "Привет! Нажмите кнопку ниже или отправьте сумму числом.\n"
+        "Привет! Нажмите кнопку ниже, отправьте сумму числом или голосовое сообщение.\n"
         "/stats — статистика, /delete_last — удалить последнюю.",
         reply_markup=get_webapp_keyboard(update.effective_user.id),
     )
@@ -774,6 +1040,7 @@ async def run() -> None:
     application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("delete_last", delete_last_command))
     application.add_handler(CommandHandler("stats_me", stats_me_command))
+    application.add_handler(MessageHandler(filters.VOICE, handle_voice))
     application.add_handler(
         MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_webapp_data)
     )
