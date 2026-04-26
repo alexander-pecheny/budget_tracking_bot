@@ -6,6 +6,13 @@ authorized_users:
 
 database_path: "budget.db"
 
+# Prefer setting OPENROUTER_API_KEY in the environment for production.
+openrouter_api_key: ""
+openrouter_model: "google/gemini-2.5-flash-lite"
+openrouter_api_url: "https://openrouter.ai/api/v1/chat/completions"
+openrouter_app_name: "Budget Tracking Bot"
+openrouter_site_url: ""
+
 currencies:
   - "RSD"
   - "AMD"
@@ -28,6 +35,8 @@ categories:
   - "Товары для дома"
   - "Подарки"
   - "Другое"
+
+categories_no_comment: []
 
 timeout_seconds: 300
 
