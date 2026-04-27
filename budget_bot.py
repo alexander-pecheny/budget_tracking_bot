@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import signal
 import sqlite3
 import subprocess
@@ -51,6 +52,7 @@ OPENROUTER_API_URL: str = config.get(
 OPENROUTER_MODEL: str = config.get("openrouter_model", "google/gemini-2.5-flash-lite")
 OPENROUTER_APP_NAME: str = config.get("openrouter_app_name", "Budget Tracking Bot")
 OPENROUTER_SITE_URL: str = config.get("openrouter_site_url", "")
+FFMPEG_PATH: str = config.get("ffmpeg_path") or os.getenv("FFMPEG_PATH", "")
 
 
 def make_config_enum(name: str, values: list[str]) -> type[Enum]:
@@ -286,6 +288,20 @@ def is_authorized(user_id: int) -> bool:
     return user_id in AUTHORIZED_USERS
 
 
+def get_ffmpeg_path() -> str:
+    candidates = [
+        FFMPEG_PATH,
+        shutil.which("ffmpeg") or "",
+        "/usr/bin/ffmpeg",
+        "/usr/local/bin/ffmpeg",
+        "/opt/homebrew/bin/ffmpeg",
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return candidate
+    raise RuntimeError("ffmpeg is required to transcode voice messages.")
+
+
 def get_openrouter_headers() -> dict[str, str]:
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -404,32 +420,39 @@ async def parse_voice_transaction(audio_base64: str) -> VoiceTransaction:
 
 
 async def transcode_to_ogg_vorbis(input_path: Path, output_path: Path) -> None:
-    try:
+    ffmpeg_path = get_ffmpeg_path()
+    errors: list[str] = []
+    for encoder in ("libvorbis", "vorbis"):
+        strict_args = ["-strict", "-2"] if encoder == "vorbis" else []
+        channels = "2" if encoder == "vorbis" else "1"
         process = await asyncio.create_subprocess_exec(
-            "ffmpeg",
+            ffmpeg_path,
             "-y",
             "-i",
             str(input_path),
             "-vn",
             "-ac",
-            "1",
+            channels,
             "-ar",
             "16000",
             "-codec:a",
-            "libvorbis",
+            encoder,
             "-q:a",
             "3",
+            *strict_args,
             str(output_path),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-    except FileNotFoundError as e:
-        raise RuntimeError("ffmpeg is required to transcode voice messages.") from e
+        _, stderr = await process.communicate()
+        if process.returncode == 0:
+            return
+        errors.append(
+            f"{encoder}: {stderr.decode('utf-8', errors='replace')}"
+        )
 
-    _, stderr = await process.communicate()
-    if process.returncode != 0:
-        logging.error("ffmpeg failed: %s", stderr.decode("utf-8", errors="replace"))
-        raise RuntimeError("Failed to transcode voice message.")
+    logging.error("ffmpeg failed: %s", "\n".join(errors))
+    raise RuntimeError("Failed to transcode voice message.")
 
 
 async def download_voice_audio_base64(update: Update) -> str:
