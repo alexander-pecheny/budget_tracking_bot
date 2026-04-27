@@ -342,6 +342,8 @@ def get_voice_extraction_prompt() -> str:
         f"Allowed categories: {categories}. "
         "Use RSD for Russian mentions of Serbian dinars, including "
         "'динар', 'динара', 'динаров', and 'сербских динаров'. "
+        "Use AMD for Russian mentions of Armenian drams: драм, драмов, драмы. "
+        "Use GEL for Russian mentions of Georgian lari: лари. "
         "The comment field must be the full transcript of the user's speech as "
         "you detected it, in Russian, not a summary or translation."
     )
